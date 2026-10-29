@@ -9,12 +9,12 @@
 # ConfigMap sync.
 #
 # Environment: KUBE_CONTEXT (default: the kubeconfig's current context),
-# NVKE_CONTROLLER_NAMESPACE (default nke-controller).
+# NVKE_CONTROLLER_NAMESPACE (default nvke-controller).
 
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-namespace="${NVKE_CONTROLLER_NAMESPACE:-nke-controller}"
+namespace="${NVKE_CONTROLLER_NAMESPACE:-nvke-controller}"
 
 kubectl_cmd=(kubectl)
 [[ -n "${KUBE_CONTEXT:-}" ]] && kubectl_cmd+=(--context "${KUBE_CONTEXT}")

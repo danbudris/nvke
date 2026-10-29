@@ -347,7 +347,7 @@ func (e *authzEnv) psql(ctx context.Context, query string) []string {
 		envOrDefault(authzPostgresNamespaceEnv, "postgres"),
 		envOrDefault(authzPostgresPodEnv, "postgres-postgresql-0"),
 		envOrDefault(authzPostgresContainerEnv, "postgresql"),
-		[]string{"sh", "-c", script, "psql", envOrDefault(authzPostgresDatabaseEnv, "nke-controller"), query})
+		[]string{"sh", "-c", script, "psql", envOrDefault(authzPostgresDatabaseEnv, "nvke-controller"), query})
 	Expect(err).NotTo(HaveOccurred(), "psql %q: %s", query, stderr)
 	var rows []string
 	for _, line := range strings.Split(strings.TrimSpace(stdout), "\n") {
@@ -415,7 +415,7 @@ func (e *authzEnv) terminateWorkflow(ctx context.Context, workflowID string) {
 
 	command := []string{
 		"temporal", "workflow", "terminate",
-		"--namespace", envOrDefault("E2E_TEMPORAL_NAMESPACE", "nke-controller"),
+		"--namespace", envOrDefault("E2E_TEMPORAL_NAMESPACE", "nvke-controller"),
 		"--address", envOrDefault("E2E_TEMPORAL_ADDRESS", "temporal-frontend."+namespace+".svc.cluster.local:7233"),
 		"--workflow-id", workflowID,
 		"--reason", "authz e2e: no infrastructure behind this cluster",

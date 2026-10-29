@@ -79,7 +79,7 @@ func main() {
 	flag.StringVar(&o.kubeContext, "kube-context", "", "kubectl context (default: current)")
 	flag.IntVar(&o.perTenant, "per-tenant", 20, "clusters per tenant")
 	flag.DurationVar(&o.ttl, "ttl", 4*time.Hour, "lifetime of the tokens written into the scenarios")
-	flag.BoolVar(&o.terminateAllRunning, "terminate-all-running", false, "also terminate every other running workflow in the nke-controller namespace")
+	flag.BoolVar(&o.terminateAllRunning, "terminate-all-running", false, "also terminate every other running workflow in the nvke-controller namespace")
 	flag.Parse()
 
 	if err := run(context.Background(), o); err != nil {
@@ -151,7 +151,7 @@ func run(ctx context.Context, o options) error {
 		}
 	}
 	if out, err := temporal(ctx, o.kubeContext, "workflow", "count", "--query", "ExecutionStatus='Running'"); err == nil {
-		fmt.Fprintf(os.Stdout, "running workflows in nke-controller: %s\n", strings.TrimSpace(out))
+		fmt.Fprintf(os.Stdout, "running workflows in nvke-controller: %s\n", strings.TrimSpace(out))
 	} else {
 		fmt.Fprintf(os.Stderr, "warning: count running workflows: %v: %s\n", err, out)
 	}
@@ -384,10 +384,10 @@ func kubectl(ctx context.Context, kubeContext string, args ...string) (string, e
 	return string(out), err
 }
 
-// temporal runs the temporal CLI in the admin-tools pod against nke-controller.
+// temporal runs the temporal CLI in the admin-tools pod against nvke-controller.
 func temporal(ctx context.Context, kubeContext string, args ...string) (string, error) {
 	full := append([]string{"-n", "temporal", "exec", "deploy/temporal-admintools", "--", "temporal"}, args...)
-	full = append(full, "--namespace", "nke-controller", "--address", "temporal-frontend:7233")
+	full = append(full, "--namespace", "nvke-controller", "--address", "temporal-frontend:7233")
 	return kubectl(ctx, kubeContext, full...)
 }
 
