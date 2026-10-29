@@ -84,6 +84,7 @@ func TestClientAuthorize(t *testing.T) {
 			wantOutcome: authz.OutcomeDeny,
 		},
 		{name: "an unknown outcome", decision: decision("permit"), wantErr: authz.ErrDenied, wantOutcome: authz.OutcomeDeny},
+		{name: "the Guard's error outcome", decision: decision(authz.OutcomeError), wantErr: authz.ErrDenied, wantOutcome: authz.OutcomeDeny},
 		{name: "an empty outcome", decision: authz.Decision{}, wantErr: authz.ErrDenied, wantOutcome: authz.OutcomeDeny},
 	}
 

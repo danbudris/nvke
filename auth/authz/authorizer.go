@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package authz holds the NVKE API authorization: the client an API calls, the
-// Authorizer interface every backend implements, and the isolation check and
-// tenant ID rules every backend shares.
+// Guard that puts the client in front of the API's requests, the Authorizer
+// interface every backend implements, and the isolation check and tenant ID
+// rules every backend shares. authz/authzhttp answers a Guard's refusals over
+// net/http.
 //
 // A backend is the Authorizer a Client asks for each decision, such as
 // LocalBundle (authz/localbundle), which evaluates Cedar policy from files the
@@ -117,6 +119,11 @@ type Authorizer interface {
 	// CheckIsolation before any policy, and return a refusal as the Outcome
 	// with a nil error. On an allow it must set Decision.Caller. An error means
 	// the backend couldn't answer; the client refuses the request.
+	//
+	// For an operator, the result on a ScopeObject Resource, error included,
+	// must not depend on Resource.Tenant, which is for the isolation check
+	// only. Guard relies on this to answer a missing object like another
+	// tenant's for every caller.
 	Authorize(ctx context.Context, q Query) (Decision, error)
 
 	// Ready reports whether the backend can answer. Call it, through

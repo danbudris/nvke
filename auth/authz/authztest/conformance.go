@@ -86,10 +86,11 @@ type testCase struct {
 	want     authz.Outcome
 }
 
-// Run asserts that f.Authorizer applies the isolation check and reports the
-// caller's tenancy on an allow. Most cases run in parallel, after Run returns,
-// so release the backend with t.Cleanup, not defer. Under -race the suite
-// also checks the backend is safe for concurrent use.
+// Run asserts that f.Authorizer applies the isolation check, reports the
+// caller's tenancy on an allow, and answers an operator the same on every
+// tenant's object. Most cases run in parallel, after Run returns, so release
+// the backend with t.Cleanup, not defer. Under -race the suite also checks the
+// backend is safe for concurrent use.
 func Run(t *testing.T, f Fixture) {
 	t.Helper()
 	checkFixture(t, f)
@@ -123,6 +124,17 @@ func Run(t *testing.T, f Fixture) {
 			check(t, f, tc)
 		})
 	}
+
+	// Guard asks about a missing object as one owned by a tenant no caller
+	// holds, so an operator's answer must not depend on the object's tenant.
+	t.Run("operator, same answer in every tenant", func(t *testing.T) {
+		t.Parallel()
+		for _, action := range []string{f.AllowedAction, f.DeniedAction} {
+			inA := authorize(t, f, f.Operator, action, object("Cluster", "t1", f.TenantA))
+			inB := authorize(t, f, f.Operator, action, object("Cluster", "t1", f.TenantB))
+			assert.Equal(t, inA.Outcome, inB.Outcome, "action %s on tenant A's object and tenant B's", action)
+		}
+	})
 }
 
 func checkFixture(t *testing.T, f Fixture) {
@@ -231,11 +243,7 @@ func cases(f Fixture) []testCase {
 
 func check(t *testing.T, f Fixture, tc testCase) {
 	t.Helper()
-	q := authz.Query{Principal: tc.caller, Action: tc.action, Resource: tc.resource}
-	require.NoError(t, q.Validate(), "the suite built an invalid query")
-	d, err := f.Authorizer.Authorize(t.Context(), q)
-
-	require.NoError(t, err, "a refusal is an outcome, not an error")
+	d := authorize(t, f, tc.caller, tc.action, tc.resource)
 	if tc.want == refused {
 		assert.NotEqual(t, authz.OutcomeAllow, d.Outcome)
 		return
@@ -244,6 +252,15 @@ func check(t *testing.T, f Fixture, tc testCase) {
 	if d.Outcome == authz.OutcomeAllow {
 		checkCaller(t, f, tc.role, d.Caller)
 	}
+}
+
+func authorize(t *testing.T, f Fixture, caller authn.Principal, action string, r authz.Resource) authz.Decision {
+	t.Helper()
+	q := authz.Query{Principal: caller, Action: action, Resource: r}
+	require.NoError(t, q.Validate(), "the suite built an invalid query")
+	d, err := f.Authorizer.Authorize(t.Context(), q)
+	require.NoError(t, err, "a refusal is an outcome, not an error")
+	return d
 }
 
 // checkCaller asserts the tenancy an allow reports, which the API uses to
