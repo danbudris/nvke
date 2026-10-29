@@ -572,6 +572,7 @@ func main() {
 		logger.Info("Cert renewal controller disabled")
 	}
 
+	authorizer, authzErr := newAuthorizer(authzClient, dbInstance, logger)
 	httpServer, err := server.NewServer(
 		cfg,
 		serverLogger,
@@ -582,9 +583,9 @@ func main() {
 		server.WithFleetOIDC(&controllerCfg.OIDC),
 		server.WithAllowLegacyCalicoClusterCreation(controllerCfg.AllowLegacyCalicoClusterCreation),
 		server.WithNodeAgentClient(nodeAgentClient),
-		server.WithAuthorizer(newAuthorizer(authzClient, dbInstance, logger)),
+		server.WithAuthorizer(authorizer),
 	)
-	if err != nil {
+	if err = errors.Join(authzErr, err); err != nil {
 		logger.Error("Failed to construct HTTP server", "error", err)
 		os.Exit(1)
 	}
@@ -772,9 +773,9 @@ func setupAuthorization(ctx context.Context, cfg config.Config, apiAuth *authn.C
 
 // newAuthorizer returns the middleware that asks client, or nil when
 // authorization is off.
-func newAuthorizer(client *authzlib.Client, tenants db.TenantQueries, logger *slog.Logger) *authz.Middleware {
+func newAuthorizer(client *authzlib.Client, tenants db.TenantQueries, logger *slog.Logger) (*authz.Middleware, error) {
 	if client == nil {
-		return nil
+		return nil, nil //nolint:nilnil // a nil middleware and a nil error is exactly "off"
 	}
 	return authz.NewMiddleware(client, tenants, metrics.RecordAuthzRequest, logger.With("logger", "authz"))
 }

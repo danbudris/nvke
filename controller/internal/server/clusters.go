@@ -17,9 +17,10 @@ import (
 	"github.com/google/uuid"
 	openapi_types "github.com/oapi-codegen/runtime/types"
 
+	authzlib "github.com/dsx-ai-factory/nvke/auth/authz"
+
 	"github.com/dsx-ai-factory/nvke/controller/api"
 	"github.com/dsx-ai-factory/nvke/controller/internal/agent"
-	"github.com/dsx-ai-factory/nvke/controller/internal/authz"
 	"github.com/dsx-ai-factory/nvke/controller/internal/capi"
 	"github.com/dsx-ai-factory/nvke/controller/internal/clients"
 	capiclient "github.com/dsx-ai-factory/nvke/controller/internal/clients/capi"
@@ -106,7 +107,8 @@ type clusterService struct {
 	nodeAgentClient             agent.Client
 	allowControlPlaneWithoutVIP bool
 	// authzEnabled refuses a create whose context has no authorized caller,
-	// rather than recording the cluster with no tenant.
+	// rather than recording the cluster with no tenant, and filters lists to
+	// the caller's tenant.
 	authzEnabled bool
 }
 
@@ -174,9 +176,13 @@ func (s *clusterService) applyNodePoolDefaults(req *api.CreateNodePoolRequest, c
 }
 
 func (s *clusterService) ListClusters(ctx context.Context, req api.ListClustersRequestObject) (api.ListClustersResponseObject, error) {
+	tenant, err := listTenant(ctx, s.authzEnabled)
+	if err != nil {
+		return nil, err
+	}
 	filters := db.ClusterFilters{
 		Name:   req.Params.Name,
-		Tenant: authz.ListTenant(ctx),
+		Tenant: tenant,
 	}
 
 	dbClusters, err := s.db.ListClusters(ctx, filters)
@@ -203,9 +209,9 @@ func (s *clusterService) CreateCluster(ctx context.Context, req api.CreateCluste
 	if err := network.validateCNI(db.CniPlugin(req.Body.CniPlugin)); err != nil {
 		return api.CreateCluster400JSONResponse{Message: err.Error()}, nil
 	}
-	caller, ok := authz.CallerFromContext(ctx)
+	caller, ok := authzlib.CallerFromContext(ctx)
 	if s.authzEnabled && !ok {
-		return nil, authz.ErrNoCaller
+		return nil, authzlib.ErrNoCaller
 	}
 
 	var createdCluster db.Cluster

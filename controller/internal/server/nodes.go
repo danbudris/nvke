@@ -12,7 +12,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/dsx-ai-factory/nvke/controller/api"
-	"github.com/dsx-ai-factory/nvke/controller/internal/authz"
 	"github.com/dsx-ai-factory/nvke/controller/internal/db"
 	"github.com/dsx-ai-factory/nvke/controller/internal/nodes"
 	"github.com/dsx-ai-factory/nvke/controller/internal/temporal/workflows"
@@ -22,6 +21,8 @@ type nodeService struct {
 	logger                      *slog.Logger
 	db                          db.DB
 	allowControlPlaneWithoutVIP bool
+	// authzEnabled filters lists to the authorized caller's tenant.
+	authzEnabled bool
 }
 
 func NewNodeService(logger *slog.Logger, database db.DB) *nodeService {
@@ -32,13 +33,17 @@ func NewNodeService(logger *slog.Logger, database db.DB) *nodeService {
 }
 
 func (s *nodeService) ListNodes(ctx context.Context, req api.ListNodesRequestObject) (api.ListNodesResponseObject, error) {
+	tenant, err := listTenant(ctx, s.authzEnabled)
+	if err != nil {
+		return nil, err
+	}
 	filters := db.NodeFilters{
 		ClusterID:    req.Params.ClusterID,
 		NodePoolID:   req.Params.NodePoolID,
 		ClusterName:  req.Params.ClusterName,
 		Name:         req.Params.Name,
 		ControlPlane: req.Params.ControlPlane,
-		Tenant:       authz.ListTenant(ctx),
+		Tenant:       tenant,
 	}
 
 	dbNodes, err := s.db.ListNodes(ctx, filters)

@@ -1,15 +1,15 @@
 // SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package authz authorizes API requests with the auth/authz client and the
-// LocalBundle backend. Middleware asks about each request after authentication
-// and request validation, and puts the authorized caller on the context, where
-// handlers read it to record a new cluster's tenant and to filter lists.
+// Package authz authorizes API requests with the auth/authz Guard and the
+// LocalBundle backend. Middleware resolves each request's target after
+// authentication and request validation and asks the Guard, which puts the
+// authorized caller on the context, where handlers read it with
+// auth/authz CallerFromContext and ListTenant.
 package authz
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -17,7 +17,6 @@ import (
 
 	"github.com/getkin/kin-openapi/openapi3"
 
-	authzlib "github.com/dsx-ai-factory/nvke/auth/authz"
 	"github.com/dsx-ai-factory/nvke/auth/authz/localbundle"
 
 	"github.com/dsx-ai-factory/nvke/controller/api"
@@ -99,32 +98,3 @@ func RunReloads(ctx context.Context, backend Reloader, interval time.Duration, r
 		}
 	}
 }
-
-// callerKey is unexported so no other package can collide with it.
-type callerKey struct{}
-
-// ContextWithCaller returns a copy of ctx that carries the authorized caller.
-func ContextWithCaller(ctx context.Context, c authzlib.Caller) context.Context {
-	return context.WithValue(ctx, callerKey{}, c)
-}
-
-// CallerFromContext returns the caller the middleware authorized. False when
-// authorization is off.
-func CallerFromContext(ctx context.Context) (authzlib.Caller, bool) {
-	c, ok := ctx.Value(callerKey{}).(authzlib.Caller)
-	return c, ok
-}
-
-// ListTenant returns the tenant a list must be filtered to: the caller's,
-// unless the caller is an operator. Nil means no filter.
-func ListTenant(ctx context.Context) *string {
-	c, ok := CallerFromContext(ctx)
-	if !ok || c.Operator {
-		return nil
-	}
-	return &c.Tenant
-}
-
-// ErrNoCaller reports a request that reached a handler with authorization on
-// but no authorized caller on its context.
-var ErrNoCaller = errors.New("authorization is on, but the request has no authorized caller")

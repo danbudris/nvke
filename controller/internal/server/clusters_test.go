@@ -2134,13 +2134,13 @@ func TestClusterService_CreateClusterRecordsTheCallersTenant(t *testing.T) {
 	newServer := func(mockDB *mockDB) api.StrictServerInterface {
 		return server.NewServerImpl(config.Config{}, discardLogger(), mockDB, nil, nil,
 			server.WithAllowLegacyCalicoClusterCreation(true),
-			server.WithAuthorizer(authz.NewMiddleware(nil, nil, nil, discardLogger())))
+			server.WithAuthorizer(&authz.Middleware{}))
 	}
 
 	t.Run("no caller", func(t *testing.T) {
 		mockDB := &mockDB{MockTx: &mockTx{}}
 		_, err := newServer(mockDB).CreateCluster(context.Background(), api.CreateClusterRequestObject{Body: baseNicoClusterCreateRequest()})
-		require.ErrorIs(t, err, authz.ErrNoCaller)
+		require.ErrorIs(t, err, authzlib.ErrNoCaller)
 		mockDB.AssertNotCalled(t, "RunInTx", mock.Anything, mock.Anything)
 	})
 
@@ -2151,11 +2151,21 @@ func TestClusterService_CreateClusterRecordsTheCallersTenant(t *testing.T) {
 			return c.Tenant == "nca-a"
 		})).Return(db.Cluster{}, errors.New("stop after the insert"))
 
-		ctx := authz.ContextWithCaller(context.Background(), authzlib.Caller{Tenant: "nca-a"})
+		ctx := authzlib.ContextWithCaller(context.Background(), authzlib.Caller{Tenant: "nca-a"})
 		_, err := newServer(mockDB).CreateCluster(ctx, api.CreateClusterRequestObject{Body: baseNicoClusterCreateRequest()})
 		require.ErrorContains(t, err, "stop after the insert")
 		mockDB.MockTx.AssertExpectations(t)
 	})
+}
+
+// With authorization on, a list with no authorized caller fails closed before
+// any query.
+func TestClusterService_ListClustersWithNoCallerFailsClosed(t *testing.T) {
+	mockDB := &mockDB{}
+	srv := server.NewServerImpl(config.Config{}, discardLogger(), mockDB, nil, nil, server.WithAuthorizer(&authz.Middleware{}))
+	_, err := srv.ListClusters(context.Background(), api.ListClustersRequestObject{})
+	require.ErrorIs(t, err, authzlib.ErrNoCaller)
+	mockDB.AssertNotCalled(t, "ListClusters", mock.Anything, mock.Anything)
 }
 
 func TestClusterService_CreateClusterRejectsCalicoBeforeTransaction(t *testing.T) {

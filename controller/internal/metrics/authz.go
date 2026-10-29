@@ -7,6 +7,8 @@ package metrics
 import (
 	"github.com/prometheus/client_golang/prometheus"
 
+	authzlib "github.com/dsx-ai-factory/nvke/auth/authz"
+
 	"github.com/dsx-ai-factory/nvke/controller/internal/authz"
 )
 
@@ -29,8 +31,8 @@ var (
 		[]string{"result"},
 	)
 
-	_ authz.RequestRecorder = RecordAuthzRequest
-	_ authz.ReloadRecorder  = RecordAuthzReload
+	_ authzlib.Recorder    = RecordAuthzRequest
+	_ authz.ReloadRecorder = RecordAuthzReload
 )
 
 func init() {
@@ -38,9 +40,9 @@ func init() {
 }
 
 // RecordAuthzRequest counts one authorization decision. Its signature is
-// authz.RequestRecorder.
-func RecordAuthzRequest(outcome, action string) {
-	authzRequestsTotal.WithLabelValues(outcome, action).Inc()
+// authzlib.Recorder.
+func RecordAuthzRequest(outcome authzlib.Outcome, action string) {
+	authzRequestsTotal.WithLabelValues(string(outcome), action).Inc()
 }
 
 // RecordAuthzReload counts one bundle reload. Its signature is

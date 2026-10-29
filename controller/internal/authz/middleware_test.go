@@ -152,10 +152,10 @@ var (
 // outcomes records what the middleware counted.
 type outcomes struct {
 	mu   sync.Mutex
-	seen []string
+	seen []authzlib.Outcome
 }
 
-func (o *outcomes) record(outcome, _ string) {
+func (o *outcomes) record(outcome authzlib.Outcome, _ string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.seen = append(o.seen, outcome)
@@ -168,7 +168,8 @@ type result struct {
 	reached bool
 	caller  authzlib.Caller
 	listFor *string
-	counted []string
+	listErr error
+	counted []authzlib.Outcome
 }
 
 // serve sends request for operationID through a new Middleware, as p. A request
@@ -177,13 +178,14 @@ func serve(t *testing.T, client *authzlib.Client, lookups db.TenantQueries, p *a
 	t.Helper()
 	var counted outcomes
 	logger := slog.New(slog.DiscardHandler)
-	m := authz.NewMiddleware(client, lookups, counted.record, logger)
+	m, err := authz.NewMiddleware(client, lookups, counted.record, logger)
+	require.NoError(t, err)
 
 	var got result
 	next := func(ctx context.Context, w http.ResponseWriter, _ *http.Request, _ any) (any, error) {
 		got.reached = true
-		got.caller, _ = authz.CallerFromContext(ctx)
-		got.listFor = authz.ListTenant(ctx)
+		got.caller, _ = authzlib.CallerFromContext(ctx)
+		got.listFor, got.listErr = authzlib.ListTenant(ctx)
 		w.WriteHeader(http.StatusOK)
 		return "handled", nil
 	}
@@ -220,12 +222,12 @@ func TestMiddleware(t *testing.T) {
 		request     any
 		wantStatus  int
 		wantBody    string
-		wantOutcome string
+		wantOutcome authzlib.Outcome
 		wantCaller  authzlib.Caller
 	}{
 		{
 			name: "no principal", principal: nil, operationID: "GetCluster", request: getCluster(ownCluster),
-			wantStatus: http.StatusForbidden, wantBody: notAuthorizedBody, wantOutcome: authz.OutcomeError,
+			wantStatus: http.StatusForbidden, wantBody: notAuthorizedBody, wantOutcome: authzlib.OutcomeError,
 		},
 		{
 			name: "a reader gets its own cluster", principal: reader, operationID: "GetCluster", request: getCluster(ownCluster),
@@ -302,12 +304,13 @@ func TestMiddleware(t *testing.T) {
 			wantStatus: http.StatusOK, wantOutcome: "allow", wantCaller: authzlib.Caller{Tenant: "nca-op", Operator: true},
 		},
 		{
+			// It answers as a missing cluster: the guard has no unowned path.
 			name: "an operator gets a cluster no tenant owns", principal: operator, operationID: "GetCluster", request: getCluster(legacyCluster),
-			wantStatus: http.StatusOK, wantOutcome: "allow", wantCaller: authzlib.Caller{Tenant: "nca-op", Operator: true},
+			wantStatus: http.StatusNotFound, wantOutcome: "not_found",
 		},
 		{
 			name: "an operator gets a missing cluster", principal: operator, operationID: "GetCluster", request: getCluster(missing),
-			wantStatus: http.StatusNotFound, wantOutcome: "allow",
+			wantStatus: http.StatusNotFound, wantOutcome: "not_found",
 		},
 		{
 			name: "an operator lists clusters", principal: operator, operationID: "ListClusters",
@@ -322,13 +325,19 @@ func TestMiddleware(t *testing.T) {
 			got := serve(t, client, tenants, tt.principal, tt.operationID, tt.request)
 			assert.Equal(t, tt.wantStatus, got.status)
 			assert.Equal(t, tt.wantBody, got.body)
-			assert.Equal(t, []string{tt.wantOutcome}, got.counted)
+			assert.Equal(t, []authzlib.Outcome{tt.wantOutcome}, got.counted)
 			assert.Equal(t, tt.wantStatus == http.StatusOK, got.reached)
 			assert.Equal(t, tt.wantCaller, got.caller)
-			if got.reached && !tt.wantCaller.Operator {
-				assert.Equal(t, &tt.wantCaller.Tenant, got.listFor, "a list is filtered to the caller's tenant")
-			} else {
+			switch {
+			case !got.reached:
+			case tt.wantCaller.Tenant == "":
+				require.ErrorIs(t, got.listErr, authzlib.ErrNoCaller, "a caller with no tenant can't list")
+			case tt.wantCaller.Operator:
+				require.NoError(t, got.listErr)
 				assert.Nil(t, got.listFor, "an operator's list is not filtered")
+			default:
+				require.NoError(t, got.listErr)
+				assert.Equal(t, &tt.wantCaller.Tenant, got.listFor, "a list is filtered to the caller's tenant")
 			}
 		})
 	}
@@ -368,7 +377,7 @@ func TestALookupErrorIsAGeneric500(t *testing.T) {
 	assert.Equal(t, http.StatusInternalServerError, got.status)
 	assert.JSONEq(t, `{"message":"Internal Server Error"}`, got.body)
 	assert.False(t, got.reached)
-	assert.Equal(t, []string{authz.OutcomeError}, got.counted)
+	assert.Equal(t, []authzlib.Outcome{authzlib.OutcomeError}, got.counted)
 }
 
 // Through the generated strict handler, a refusal is the whole response: the
@@ -377,7 +386,8 @@ func TestTheGeneratedHandlerWritesNothingAfterARefusal(t *testing.T) {
 	t.Parallel()
 
 	logger := slog.New(slog.DiscardHandler)
-	m := authz.NewMiddleware(newClient(t), tenants, nil, logger)
+	m, err := authz.NewMiddleware(newClient(t), tenants, nil, logger)
+	require.NoError(t, err)
 	failOnError := func(_ http.ResponseWriter, _ *http.Request, err error) {
 		t.Errorf("the generated handler reported %v", err)
 	}

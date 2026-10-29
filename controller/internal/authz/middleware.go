@@ -5,7 +5,6 @@ package authz
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -14,168 +13,98 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/dsx-ai-factory/nvke/auth/authn"
 	authzlib "github.com/dsx-ai-factory/nvke/auth/authz"
+	"github.com/dsx-ai-factory/nvke/auth/authz/authzhttp"
 
 	"github.com/dsx-ai-factory/nvke/controller/api"
 	"github.com/dsx-ai-factory/nvke/controller/internal/db"
 )
 
+// The resource types the middleware asks about.
 const (
-	// The resource types the middleware asks about.
 	typeCluster    = "Cluster"
 	typeNodePool   = "NodePool"
 	typeNodeSet    = "NodeSet"
 	typeNode       = "Node"
 	typeCollection = "Collection"
-
-	// OutcomeError is the outcome RequestRecorder counts when the request was
-	// refused because it couldn't be decided: no principal, a failed lookup,
-	// or the client failing closed.
-	OutcomeError = "error"
-
-	// notAuthorized is the body of every 403 this middleware writes. It
-	// names no reason, so a caller learns nothing about the policy.
-	notAuthorized = "Not authorized"
 )
 
-// RequestRecorder counts one decision by outcome and action.
-type RequestRecorder func(outcome, action string)
-
-// Middleware authorizes each API request. It is safe for concurrent use.
+// Middleware authorizes each API request: it resolves the request's target and
+// asks an authzlib.Guard. It is safe for concurrent use.
 type Middleware struct {
-	client  *authzlib.Client
+	guard   *authzlib.Guard
 	tenants db.TenantQueries
-	record  RequestRecorder
+	record  authzlib.Recorder
 	logger  *slog.Logger
-
-	// unowned is the tenant of an object no tenant owns: a missing object, or
-	// a cluster created while authorization was off. It is a random ID no
-	// caller holds, so only an operator reaches such an object, and anyone
-	// else is refused exactly as for another tenant's object.
-	unowned string
 }
 
-// NewMiddleware returns a Middleware that asks client. record may be nil.
-func NewMiddleware(client *authzlib.Client, tenants db.TenantQueries, record RequestRecorder, logger *slog.Logger) *Middleware {
+// NewMiddleware returns a Middleware that asks client. record counts every
+// decision, and a failed tenant lookup as authzlib.OutcomeError; it may be nil.
+func NewMiddleware(client *authzlib.Client, tenants db.TenantQueries, record authzlib.Recorder, logger *slog.Logger) (*Middleware, error) {
 	if record == nil {
-		record = func(string, string) {}
+		record = func(authzlib.Outcome, string) {}
 	}
-	return &Middleware{client: client, tenants: tenants, record: record, logger: logger, unowned: uuid.NewString()}
+	guard, err := authzlib.NewGuard(client, logger, record)
+	if err != nil {
+		return nil, err
+	}
+	return &Middleware{guard: guard, tenants: tenants, record: record, logger: logger}, nil
 }
 
 // Strict is an api.StrictMiddlewareFunc. The generated handler calls it after
 // decoding the request, so request validation answers 400 first. On allow it
-// puts the caller on the context and calls next. Otherwise it writes the
-// response and returns (nil, nil), on which the generated handler writes
-// nothing more.
+// calls next with the context the guard returns, which carries the caller.
+// Otherwise it writes the response and returns (nil, nil), on which the
+// generated handler writes nothing more.
 func (m *Middleware) Strict(next api.StrictHandlerFunc, operationID string) api.StrictHandlerFunc {
 	action := strings.ToLower(operationID[:1]) + operationID[1:]
 	return func(ctx context.Context, w http.ResponseWriter, r *http.Request, request any) (any, error) {
-		caller, status := m.authorize(ctx, action, request)
-		if status != http.StatusOK {
-			m.writeRefusal(w, status)
+		target, err := m.target(ctx, action, request)
+		if err != nil {
+			m.record(authzlib.OutcomeError, action)
+			authzhttp.WriteError(w, r, err, m.logger)
 			return nil, nil
 		}
-		return next(ContextWithCaller(ctx, caller), w, r, request)
+		ctx, err = m.guard.Check(ctx, target)
+		if err != nil {
+			authzhttp.WriteError(w, r, err, m.logger)
+			return nil, nil
+		}
+		return next(ctx, w, r, request)
 	}
 }
 
-// authorize returns the caller on allow, with http.StatusOK, or the status to
-// refuse with. A missing object answers 404 even on allow, so an operator
-// sees what a handler would have answered.
-func (m *Middleware) authorize(ctx context.Context, action string, request any) (authzlib.Caller, int) {
-	principal, ok := authn.PrincipalFromContext(ctx)
-	if !ok {
-		m.record(OutcomeError, action)
-		m.logger.ErrorContext(ctx, "Refused a request with no authenticated principal", "action", action)
-		return authzlib.Caller{}, http.StatusForbidden
-	}
-	resource, missing, err := m.resource(ctx, action, request)
-	if err != nil {
-		m.record(OutcomeError, action)
-		m.logger.ErrorContext(ctx, "Failed to find the resource to authorize", "action", action, "error", err)
-		return authzlib.Caller{}, http.StatusInternalServerError
-	}
-
-	d, err := m.client.Authorize(ctx, authzlib.Query{Principal: *principal, Action: action, Resource: resource})
-	outcome := string(d.Outcome)
-	if failed(err) {
-		outcome = OutcomeError
-	}
-	m.record(outcome, action)
-
-	status := http.StatusForbidden
-	switch {
-	case err == nil && !missing:
-		return d.Caller, http.StatusOK
-	case err == nil, errors.Is(err, authzlib.ErrNotFound):
-		status = http.StatusNotFound
-	}
-	m.logger.DebugContext(ctx, "Refused a request",
-		"action", action,
-		"outcome", outcome,
-		"status", status,
-		"issuer", principal.IssuerName,
-		"tenant", d.Caller.Tenant,
-		"reasons", d.Reasons,
-		"error", err,
-	)
-	return d.Caller, status
-}
-
-// failed reports whether err is the client failing closed rather than a
-// refusal. A refusal is a bare sentinel; a failure wraps ErrDenied.
-func failed(err error) bool {
-	switch err {
-	case nil, authzlib.ErrDenied, authzlib.ErrNotFound, authzlib.ErrNoTenant: //nolint:errorlint // only the bare sentinel is a refusal
-		return false
-	default:
-		return true
-	}
-}
-
-// resource returns the resource action acts on, and whether it is an object
-// that doesn't exist.
-func (m *Middleware) resource(ctx context.Context, action string, request any) (authzlib.Resource, bool, error) {
+// target returns what action acts on. An error is a failed lookup, never a
+// refusal.
+func (m *Middleware) target(ctx context.Context, action string, request any) (authzlib.Target, error) {
 	if c, ok := collections[action]; ok {
-		return authzlib.Resource{Type: typeCollection, ID: c.id, Scope: c.scope}, false, nil
+		return authzlib.Target{Action: action, Resource: authzlib.Resource{Type: typeCollection, ID: c.id, Scope: c.scope}}, nil
 	}
 	o, ok := objects[action]
 	if !ok {
-		return authzlib.Resource{}, false, fmt.Errorf("action %s has no resource mapping", action)
+		return authzlib.Target{}, fmt.Errorf("action %s has no resource mapping", action)
 	}
 	id, ok := o.id(request)
 	if !ok {
-		return authzlib.Resource{}, false, fmt.Errorf("action %s has a request of type %T", action, request)
+		return authzlib.Target{}, fmt.Errorf("action %s has a request of type %T", action, request)
 	}
 	tenant, err := o.tenant(m.tenants, ctx, id)
 	missing := errors.Is(err, db.ErrNotFound)
 	if err != nil && !missing {
-		return authzlib.Resource{}, false, fmt.Errorf("look up the tenant of %s %s: %w", o.typ, id, err)
+		return authzlib.Target{}, fmt.Errorf("look up the tenant of %s %s: %w", o.typ, id, err)
 	}
+	// A cluster created while authorization was off has no tenant. The guard
+	// has no path for an unowned object, so it answers as a missing one: 404
+	// for every caller, an operator included. A real deployment backfills an
+	// owner for every such cluster before it turns authorization on.
 	if tenant == "" {
-		tenant = m.unowned
+		missing = true
 	}
-	return authzlib.Resource{Type: o.typ, ID: id.String(), Scope: authzlib.ScopeObject, Tenant: tenant}, missing, nil
-}
-
-// writeRefusal writes the response to a request the middleware stopped. A 404
-// has no body, like every 404 the API returns.
-func (m *Middleware) writeRefusal(w http.ResponseWriter, status int) {
-	if status == http.StatusNotFound {
-		w.WriteHeader(status)
-		return
-	}
-	message := notAuthorized
-	if status == http.StatusInternalServerError {
-		message = http.StatusText(status)
-	}
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	if err := json.NewEncoder(w).Encode(api.GenericError{Message: message}); err != nil {
-		m.logger.Error("Failed to write the authorization response", "error", err)
-	}
+	return authzlib.Target{
+		Action:   action,
+		Resource: authzlib.Resource{Type: o.typ, ID: id.String(), Scope: authzlib.ScopeObject, Tenant: tenant},
+		Missing:  missing,
+	}, nil
 }
 
 // collection is the resource of a list, create or global action.

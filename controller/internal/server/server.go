@@ -293,16 +293,20 @@ func NewServerImpl(
 	clusterService.nodeAgentClient = o.nodeAgentClient
 	clusterService.allowControlPlaneWithoutVIP = cfg.AllowControlPlaneWithoutVIP
 	clusterService.authzEnabled = o.authorizer != nil
+	nodePoolService.authzEnabled = o.authorizer != nil
 	nodes.PinAgentProfile(&clusterService.nodeAgentProfile, cfg)
 	nodes.PinAgentProfile(&nodePoolService.nodeAgentProfile, cfg)
 
 	nodeService := NewNodeService(logger, database)
 	nodeService.allowControlPlaneWithoutVIP = cfg.AllowControlPlaneWithoutVIP
+	nodeService.authzEnabled = o.authorizer != nil
+	nodeSetService := NewNodeSetService(logger, database, temporalClient)
+	nodeSetService.authzEnabled = o.authorizer != nil
 
 	return &serverImpl{
 		clusterService:       *clusterService,
 		nodePoolService:      *nodePoolService,
-		nodeSetService:       *NewNodeSetService(logger, database, temporalClient),
+		nodeSetService:       *nodeSetService,
 		nodeService:          *nodeService,
 		releaseService:       *NewReleaseService(logger, k8sReader),
 		configProfileService: *NewConfigProfileService(cfg, logger),
