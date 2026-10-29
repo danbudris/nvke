@@ -1,0 +1,5 @@
+[
+  {"uid": {"type": "NVKE::Role", "id": "reader"}, "attrs": {}, "parents": []},
+  {"uid": {"type": "NVKE::Role", "id": "writer"}, "attrs": {}, "parents": [{"type": "NVKE::Role", "id": "reader"}]},
+  {"uid": {"type": "NVKE::Role", "id": "operator"}, "attrs": {}, "parents": []}
+]

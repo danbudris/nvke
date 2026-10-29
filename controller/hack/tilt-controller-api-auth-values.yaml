@@ -6,7 +6,8 @@
 # apiAuth.permissive itself. The chart renders it into apiAuth in
 # nvke-controller-config, which the controller reads, and into nvke-auth-config
 # for released nvkectl. deploy/k8s/nvke-auth-dev.yaml creates the identities it
-# admits.
+# admits. With NKE_AUTHZ_ENABLED true, the Tiltfile appends the test IdP's
+# issuers (hack/authz-dev) to the issuers below.
 apiAuth:
   configMap:
     create: true
@@ -29,6 +30,8 @@ apiAuth:
             # the namespace, nke-e2e included.
             - namespace: nke-clients
               name: nke-client
+            - namespace: nke-clients
+              name: nke-viewer
             - namespace: management-engine-system
               name: management-engine-controller-manager
       # SPIRE is omitted because it is not reachable yet, and an unreachable

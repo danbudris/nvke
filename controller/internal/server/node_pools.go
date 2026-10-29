@@ -14,6 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/dsx-ai-factory/nvke/controller/api"
+	"github.com/dsx-ai-factory/nvke/controller/internal/authz"
 	"github.com/dsx-ai-factory/nvke/controller/internal/capi"
 	"github.com/dsx-ai-factory/nvke/controller/internal/clients"
 	"github.com/dsx-ai-factory/nvke/controller/internal/clients/nico"
@@ -99,6 +100,7 @@ func (s *nodePoolService) ListNodePools(ctx context.Context, req api.ListNodePoo
 		ClusterID:   req.Params.ClusterID,
 		Name:        req.Params.Name,
 		ClusterName: req.Params.ClusterName,
+		Tenant:      authz.ListTenant(ctx),
 	}
 
 	dbNodePools, err := s.db.ListNodePools(ctx, filters)

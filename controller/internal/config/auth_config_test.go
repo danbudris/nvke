@@ -83,3 +83,34 @@ func TestValidateIgnoresAuthFields(t *testing.T) {
 		require.NoError(t, configured.Validate(), "permissive=%t must not change validation", permissive)
 	}
 }
+
+// AUTHZ_BUNDLE_DIR unset is authorization off. Set, the reload interval
+// defaults to 10s and must be positive.
+func TestAuthzEnvFields(t *testing.T) {
+	setMinimumEnv(t)
+	cfg, err := config.ParseConfigFromEnv()
+	require.NoError(t, err)
+	assert.Empty(t, cfg.AuthzBundleDir)
+	assert.Equal(t, 10*time.Second, cfg.AuthzReloadInterval)
+
+	t.Setenv("AUTHZ_BUNDLE_DIR", "/etc/nvke/authz")
+	t.Setenv("AUTHZ_RELOAD_INTERVAL", "0s")
+	cfg, err = config.ParseConfigFromEnv()
+	require.NoError(t, err)
+	assert.Equal(t, "/etc/nvke/authz", cfg.AuthzBundleDir)
+
+	valid := config.Config{
+		CertRenewalInterval:           12 * time.Hour,
+		CertRenewalThresholdDays:      30,
+		CertificateInspectionInterval: time.Hour,
+		CertificateObservationMaxAge:  3 * time.Hour,
+		CertificateWarningDays:        45,
+		DBConnectionString:            "postgres://cwe:strong@localhost:5432/cwe?sslmode=disable",
+		SpireServerAPIAddress:         "spire-server.spire-server.svc.cluster.local:8081",
+		AuthzBundleDir:                cfg.AuthzBundleDir,
+		AuthzReloadInterval:           cfg.AuthzReloadInterval,
+	}
+	require.ErrorContains(t, valid.Validate(), "AUTHZ_RELOAD_INTERVAL must be positive")
+	valid.AuthzReloadInterval = time.Second
+	require.NoError(t, valid.Validate())
+}

@@ -19,6 +19,7 @@ import (
 
 	"github.com/dsx-ai-factory/nvke/controller/api"
 	"github.com/dsx-ai-factory/nvke/controller/internal/agent"
+	"github.com/dsx-ai-factory/nvke/controller/internal/authz"
 	"github.com/dsx-ai-factory/nvke/controller/internal/capi"
 	"github.com/dsx-ai-factory/nvke/controller/internal/clients"
 	capiclient "github.com/dsx-ai-factory/nvke/controller/internal/clients/capi"
@@ -104,6 +105,9 @@ type clusterService struct {
 	// nodeAgentClient reads live node state; nil reports nodes unreachable.
 	nodeAgentClient             agent.Client
 	allowControlPlaneWithoutVIP bool
+	// authzEnabled refuses a create whose context has no authorized caller,
+	// rather than recording the cluster with no tenant.
+	authzEnabled bool
 }
 
 func NewClusterService(
@@ -171,7 +175,8 @@ func (s *clusterService) applyNodePoolDefaults(req *api.CreateNodePoolRequest, c
 
 func (s *clusterService) ListClusters(ctx context.Context, req api.ListClustersRequestObject) (api.ListClustersResponseObject, error) {
 	filters := db.ClusterFilters{
-		Name: req.Params.Name,
+		Name:   req.Params.Name,
+		Tenant: authz.ListTenant(ctx),
 	}
 
 	dbClusters, err := s.db.ListClusters(ctx, filters)
@@ -198,6 +203,10 @@ func (s *clusterService) CreateCluster(ctx context.Context, req api.CreateCluste
 	if err := network.validateCNI(db.CniPlugin(req.Body.CniPlugin)); err != nil {
 		return api.CreateCluster400JSONResponse{Message: err.Error()}, nil
 	}
+	caller, ok := authz.CallerFromContext(ctx)
+	if s.authzEnabled && !ok {
+		return nil, authz.ErrNoCaller
+	}
 
 	var createdCluster db.Cluster
 	err = s.db.RunInTx(ctx, func(ctx context.Context, tx db.Tx) error {
@@ -210,6 +219,7 @@ func (s *clusterService) CreateCluster(ctx context.Context, req api.CreateCluste
 		}
 		dbCluster.PodCIDR = network.podCIDR
 		dbCluster.ServiceCIDR = network.serviceCIDR.String()
+		dbCluster.Tenant = caller.Tenant
 
 		// Persist the desired count and max surge as columns up front; the config
 		// snapshot row is created after the cluster row exists (it needs the cluster ID).

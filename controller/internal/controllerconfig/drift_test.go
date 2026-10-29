@@ -66,6 +66,7 @@ var stayEnv = map[string]string{
 	"SPIRE_SERVER_ADDRESS":   downwardAPI,
 	"AUTH_CONFIG_PATH":       separateFile,
 	"CONTROLLER_CONFIG_PATH": separateFile,
+	"AUTHZ_BUNDLE_DIR":       separateFile,
 
 	"LOG_LEVEL":                                chartUnset,
 	"DB_QUERY_LOG_LEVEL":                       chartUnset,
@@ -95,6 +96,7 @@ var stayEnv = map[string]string{
 	"TELEPORT_DEFAULT_CP_POOL_ENABLED":         chartUnset,
 	"TELEPORT_DEFAULT_WORKER_POOL_ENABLED":     chartUnset,
 	"NKE_OIDC_AUTH_AUTO_MIGRATION_ENABLED":     chartUnset,
+	"AUTHZ_RELOAD_INTERVAL":                    chartUnset,
 }
 
 // configMapOnly lists config.yaml keys that never had an environment variable,

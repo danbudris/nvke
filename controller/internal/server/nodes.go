@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/dsx-ai-factory/nvke/controller/api"
+	"github.com/dsx-ai-factory/nvke/controller/internal/authz"
 	"github.com/dsx-ai-factory/nvke/controller/internal/db"
 	"github.com/dsx-ai-factory/nvke/controller/internal/nodes"
 	"github.com/dsx-ai-factory/nvke/controller/internal/temporal/workflows"
@@ -37,6 +38,7 @@ func (s *nodeService) ListNodes(ctx context.Context, req api.ListNodesRequestObj
 		ClusterName:  req.Params.ClusterName,
 		Name:         req.Params.Name,
 		ControlPlane: req.Params.ControlPlane,
+		Tenant:       authz.ListTenant(ctx),
 	}
 
 	dbNodes, err := s.db.ListNodes(ctx, filters)

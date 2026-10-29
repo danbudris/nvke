@@ -23,6 +23,7 @@ import (
 
 	"github.com/dsx-ai-factory/nvke/controller/api"
 	"github.com/dsx-ai-factory/nvke/controller/internal/agent"
+	"github.com/dsx-ai-factory/nvke/controller/internal/authz"
 	"github.com/dsx-ai-factory/nvke/controller/internal/config"
 	"github.com/dsx-ai-factory/nvke/controller/internal/controllerconfig"
 	"github.com/dsx-ai-factory/nvke/controller/internal/db"
@@ -42,6 +43,7 @@ type options struct {
 	fleetOIDC                        *controllerconfig.OIDCConfig
 	allowLegacyCalicoClusterCreation bool
 	nodeAgentClient                  agent.Client
+	authorizer                       *authz.Middleware
 }
 
 // WithFleetOIDC sets the nvke-controller-config OIDC section new clusters are pinned from.
@@ -59,6 +61,12 @@ func WithAllowLegacyCalicoClusterCreation(allow bool) Option {
 // state. Without it, such handlers report every node unreachable.
 func WithNodeAgentClient(c agent.Client) Option {
 	return func(o *options) { o.nodeAgentClient = c }
+}
+
+// WithAuthorizer authorizes every API request with m. Without it, or with a
+// nil m, authorization is off.
+func WithAuthorizer(m *authz.Middleware) Option {
+	return func(o *options) { o.authorizer = m }
 }
 
 // NewServer builds the API's HTTP server. A nil authn leaves the authentication
@@ -85,7 +93,15 @@ func NewServer(
 		return nil, fmt.Errorf("building Swagger UI OpenAPI document: %w", err)
 	}
 	serverImpl := NewServerImpl(cfg, logger, database, temporalClient, k8sReader, opts...)
-	strictHandler := api.NewStrictHandlerWithOptions(serverImpl, nil, api.StrictHTTPServerOptions{
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
+	var strictMiddlewares []api.StrictMiddlewareFunc
+	if o.authorizer != nil {
+		strictMiddlewares = append(strictMiddlewares, o.authorizer.Strict)
+	}
+	strictHandler := api.NewStrictHandlerWithOptions(serverImpl, strictMiddlewares, api.StrictHTTPServerOptions{
 		RequestErrorHandlerFunc: func(w http.ResponseWriter, r *http.Request, err error) {
 			logger.Error("OpenAPI StrictServer request error", "error", err)
 			recordRejectionReason(w, rejectionReasonRequestParsingFailed)
@@ -276,6 +292,7 @@ func NewServerImpl(
 	clusterService.fleetOIDC = o.fleetOIDC
 	clusterService.nodeAgentClient = o.nodeAgentClient
 	clusterService.allowControlPlaneWithoutVIP = cfg.AllowControlPlaneWithoutVIP
+	clusterService.authzEnabled = o.authorizer != nil
 	nodes.PinAgentProfile(&clusterService.nodeAgentProfile, cfg)
 	nodes.PinAgentProfile(&nodePoolService.nodeAgentProfile, cfg)
 

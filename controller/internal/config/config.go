@@ -435,6 +435,14 @@ type Config struct {
 	// AllowControlPlaneWithoutVIP permits control-plane lifecycle operations without a VIP for development.
 	// The API endpoint remains tied to the initializing node's IP.
 	AllowControlPlaneWithoutVIP bool `controllerconfig:"allowControlPlaneWithoutVIP"`
+
+	// AuthzBundleDir is the mounted LocalBundle authorization bundle. Unset,
+	// authorization is off. Set, startup fails unless authentication is on and
+	// enforcing and the bundle loads.
+	AuthzBundleDir string `env:"AUTHZ_BUNDLE_DIR"`
+
+	// AuthzReloadInterval is how often the bundle in AuthzBundleDir is reloaded.
+	AuthzReloadInterval time.Duration `env:"AUTHZ_RELOAD_INTERVAL" default:"10s"`
 }
 
 // TracingConfig configures OpenTelemetry span export.
@@ -633,6 +641,9 @@ func (c *Config) Validate() error {
 	}
 	if c.SpireServerAPIAddress == "" {
 		return fmt.Errorf("SPIRE_SERVER_API_ADDRESS is required")
+	}
+	if c.AuthzBundleDir != "" && c.AuthzReloadInterval <= 0 {
+		return fmt.Errorf("AUTHZ_RELOAD_INTERVAL must be positive, not %s", c.AuthzReloadInterval)
 	}
 	return nil
 }
