@@ -186,6 +186,38 @@ var _ = Describe("NVKE API authorization", Ordered, Label("authz"), func() {
 		Expect(env.tenantOf(ctx, clusterA)).To(Equal(authzTenantA))
 	})
 
+	// idp-a sets roleClaim nvke_roles. Each caller's groups claim maps to no
+	// role, so every role comes from nvke_roles.
+	It("18: grants the roles idp-a's nvke_roles claim names, in the caller's own tenant", func(ctx SpecContext) {
+		nobody := []string{"nvke-nobody"}
+		roleWriter := env.idpCallerWith("role-writer", "idp-a", authzTenantA, nobody, map[string]any{"nvke_roles": []string{"writer"}})
+		roleReader := env.idpCallerWith("role-reader", "idp-a", authzTenantA, nobody, map[string]any{"nvke_roles": "reader"})
+		roleOperator := env.idpCallerWith("role-operator", "idp-a", authzTenantA, nobody, map[string]any{"nvke_roles": []string{"operator"}})
+		roleBogus := env.idpCallerWith("role-bogus", "idp-a", authzTenantA, nobody, map[string]any{"nvke_roles": []string{"bogus"}})
+
+		By("an array naming writer: create, then delete")
+		r, created := env.createCluster(ctx, roleWriter, "authz-role-"+uuid.NewString()[:8])
+		expectStatus(r, http.StatusCreated, "role-writer creates a cluster")
+		Expect(env.tenantOf(ctx, created)).To(Equal(authzTenantA))
+		expectStatus(env.do(ctx, roleWriter, http.MethodDelete, "/clusters/"+created, nil), http.StatusAccepted, "role-writer deletes its cluster")
+		env.terminateWorkflow(ctx, "teardown-cluster-"+created)
+
+		By("a string naming reader: read, not delete")
+		expectStatus(env.do(ctx, roleReader, http.MethodGet, "/clusters/"+clusterA, nil), http.StatusOK, "role-reader gets A")
+		expectStatus(env.do(ctx, roleReader, http.MethodDelete, "/clusters/"+clusterA, nil), http.StatusForbidden, "role-reader deletes A")
+
+		By("operator named in the claim: the role, but not an operator's reach")
+		expectStatus(env.do(ctx, roleOperator, http.MethodGet, "/clusters/"+clusterA, nil), http.StatusOK, "role-operator gets A")
+		expectStatus(env.do(ctx, roleOperator, http.MethodGet, "/clusters/"+clusterA2, nil), http.StatusNotFound, "role-operator gets A2")
+		r = env.do(ctx, roleOperator, http.MethodGet, "/clusters", nil)
+		expectStatus(r, http.StatusOK, "role-operator lists clusters")
+		Expect(listIDs(r, "clusters")).To(Equal(env.tenantIDs(ctx, "clusters", authzTenantA)),
+			"role-operator's list is exactly %s's clusters", authzTenantA)
+
+		By("an undeclared role grants nothing")
+		expectStatus(env.do(ctx, roleBogus, http.MethodGet, "/clusters", nil), http.StatusForbidden, "role-bogus lists clusters")
+	})
+
 	It("15: lets an operator delete another tenant's cluster", func(ctx SpecContext) {
 		expectStatus(env.do(ctx, operator, http.MethodDelete, "/clusters/"+clusterA2, nil), http.StatusAccepted, "operator deletes A2")
 		env.terminateWorkflow(ctx, "teardown-cluster-"+clusterA2)

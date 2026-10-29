@@ -34,10 +34,13 @@ const (
 
 // Claims are the claims a minted token carries.
 type Claims struct {
-	Issuer   string
-	Subject  string
-	Groups   []string
-	Org      string
+	Issuer  string
+	Subject string
+	Groups  []string
+	Org     string
+	// Extra adds top-level claims, such as nvke_roles. It can't replace a
+	// claim Mint sets.
+	Extra    map[string]any
 	Audience string
 	TTL      time.Duration
 }
@@ -135,5 +138,21 @@ func Mint(key *ecdsa.PrivateKey, c Claims) (string, error) {
 	if c.Org != "" {
 		private["org"] = c.Org
 	}
+	for name, value := range c.Extra {
+		if _, ok := private[name]; ok || isRegistered(name) {
+			return "", fmt.Errorf("extra claim %q replaces a claim Mint sets", name)
+		}
+		private[name] = value
+	}
 	return jwt.Signed(signer).Claims(registered).Claims(private).Serialize()
+}
+
+// isRegistered reports whether name is a registered claim Mint sets.
+func isRegistered(name string) bool {
+	switch name {
+	case "iss", "sub", "aud", "iat", "exp", "nbf", "jti":
+		return true
+	default:
+		return false
+	}
 }

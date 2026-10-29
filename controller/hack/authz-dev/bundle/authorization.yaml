@@ -16,6 +16,7 @@ issuers:
       - {namespace: nke-clients, name: nke-viewer, grants: [reader]}
   idp-a:
     tenant: {claim: org}
+    roleClaim: nvke_roles
     claims:
       - {name: groups, value: nvke-readers, grants: [reader]}
       - {name: groups, value: nvke-writers, grants: [writer]}

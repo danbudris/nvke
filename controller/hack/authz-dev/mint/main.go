@@ -5,6 +5,7 @@
 // authorization dev environment (hack/authz-dev).
 //
 //	go run ./hack/authz-dev/mint --issuer idp-a --sub alice --groups nvke-readers --org nca-a
+//	go run ./hack/authz-dev/mint --issuer idp-a --org nca-a --groups nvke-nobody --claim 'nvke_roles=["writer"]'
 //	go run ./hack/authz-dev/mint --jwks   # print the JWKS for the key
 //
 // An --issuer without a scheme is an issuer name, expanded to
@@ -12,6 +13,7 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
 	"os"
@@ -38,6 +40,19 @@ func run(args []string) error {
 	org := fs.String("org", "", "org claim (omitted when empty)")
 	aud := fs.String("aud", "https://nke.tilt.local", "aud")
 	ttl := fs.Duration("ttl", time.Hour, "lifetime; negative mints an expired token")
+	extra := map[string]any{}
+	fs.Func("claim", "name=<JSON value>, such as 'nvke_roles=[\"writer\"]' or 'nvke_roles=\"reader\"'; repeatable", func(s string) error {
+		name, raw, ok := strings.Cut(s, "=")
+		if !ok || name == "" {
+			return fmt.Errorf("--claim %q is not name=<JSON value>", s)
+		}
+		var value any
+		if err := json.Unmarshal([]byte(raw), &value); err != nil {
+			return fmt.Errorf("--claim %s: %w", name, err)
+		}
+		extra[name] = value
+		return nil
+	})
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -60,6 +75,7 @@ func run(args []string) error {
 		Subject:  *sub,
 		Groups:   splitList(*groups),
 		Org:      *org,
+		Extra:    extra,
 		Audience: *aud,
 		TTL:      *ttl,
 	})

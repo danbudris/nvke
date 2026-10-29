@@ -108,6 +108,32 @@ func TestMintOmitsEmptyClaims(t *testing.T) {
 	}
 }
 
+func TestMintAddsExtraClaims(t *testing.T) {
+	key, err := LoadKey(writeKey(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := Claims{Issuer: "i", Subject: "s", Audience: "a", Org: "o", TTL: time.Minute}
+
+	withRoles := base
+	withRoles.Extra = map[string]any{"nvke_roles": []string{"writer"}}
+	token, err := Mint(key, withRoles)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var claims map[string]any
+	decodeSegment(t, strings.Split(token, ".")[1], &claims)
+	if roles, ok := claims["nvke_roles"].([]any); !ok || len(roles) != 1 || roles[0] != "writer" {
+		t.Fatalf("nvke_roles = %#v", claims["nvke_roles"])
+	}
+
+	clash := base
+	clash.Extra = map[string]any{"org": "other"}
+	if _, err := Mint(key, clash); err == nil {
+		t.Fatal("an extra claim replaced org")
+	}
+}
+
 func decodeSegment(t *testing.T, segment string, into any) {
 	t.Helper()
 	raw, err := base64.RawURLEncoding.DecodeString(segment)

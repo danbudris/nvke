@@ -166,6 +166,12 @@ func newAuthzEnv(ctx context.Context) *authzEnv {
 // idpCaller mints a token from the test IdP for issuer ("idp-a", "idp-b").
 func (e *authzEnv) idpCaller(name, issuer, org string, groups ...string) authzCaller {
 	GinkgoHelper()
+	return e.idpCallerWith(name, issuer, org, groups, nil)
+}
+
+// idpCallerWith is idpCaller with extra top-level claims, such as nvke_roles.
+func (e *authzEnv) idpCallerWith(name, issuer, org string, groups []string, extra map[string]any) authzCaller {
+	GinkgoHelper()
 	key, err := idptoken.LoadKey(envOrDefault(authzKeyEnv, authzDefaultKey))
 	Expect(err).NotTo(HaveOccurred(),
 		"authorization is on but the test IdP key is not readable; run controller/hack/authz-dev/gen.sh or set %s", authzKeyEnv)
@@ -175,6 +181,7 @@ func (e *authzEnv) idpCaller(name, issuer, org string, groups ...string) authzCa
 		Audience: e.audience,
 		Groups:   groups,
 		Org:      org,
+		Extra:    extra,
 		TTL:      time.Hour,
 	})
 	Expect(err).NotTo(HaveOccurred(), "mint a token for %s", name)

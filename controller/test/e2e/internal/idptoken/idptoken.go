@@ -25,13 +25,15 @@ import (
 )
 
 // Claims are the claims a minted token carries. Groups and Org are omitted
-// when empty.
+// when empty. Extra adds top-level claims, such as nvke_roles; it can't
+// replace any other claim here.
 type Claims struct {
 	Issuer   string
 	Subject  string
 	Audience string
 	Groups   []string
 	Org      string
+	Extra    map[string]any
 	TTL      time.Duration
 }
 
@@ -116,6 +118,12 @@ func Mint(key *ecdsa.PrivateKey, c Claims) (string, error) {
 	}
 	if c.Org != "" {
 		claims["org"] = c.Org
+	}
+	for name, value := range c.Extra {
+		if _, ok := claims[name]; ok {
+			return "", fmt.Errorf("extra claim %q replaces a claim Mint sets", name)
+		}
+		claims[name] = value
 	}
 	payload, err := json.Marshal(claims)
 	if err != nil {
