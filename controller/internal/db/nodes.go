@@ -272,6 +272,7 @@ type NodeFilters struct {
 	ClusterName        *string
 	Name               *string
 	TeleportRegistered *bool
+	Tenant             *string
 
 	// Condition filters use asymmetric matching:
 	//   - true:  exact match (status = 'True')
@@ -361,6 +362,9 @@ func (q *queriesImpl) ListNodes(ctx context.Context, filters NodeFilters) ([]Nod
 	}
 	if filters.TeleportRegistered != nil {
 		query = whereNodeConditionStatus(query, "teleportRegistered", *filters.TeleportRegistered)
+	}
+	if filters.Tenant != nil {
+		query = query.Where("c.tenant = ?", *filters.Tenant)
 	}
 	if filters.Pending != nil {
 		query = whereNodeConditionStatus(query, "pending", *filters.Pending)

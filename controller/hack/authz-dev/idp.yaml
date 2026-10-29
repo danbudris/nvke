@@ -1,0 +1,109 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# The authorization dev environment's test IdP: nginx serving one JWKS over TLS
+# at /idp-a/jwks.json and /idp-b/jwks.json. Development only.
+#
+# hack/authz-dev/apply-idp.sh applies this file, then the two objects built from
+# the files hack/authz-dev/gen.sh generates: Secret test-idp-tls (the serving
+# certificate) and ConfigMap test-idp-jwks (jwks.json).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: nvke-authz-idp
+  labels:
+    nke.nvidia.com/purpose: nke-authz-dev
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-idp-nginx
+  namespace: nvke-authz-idp
+  labels:
+    nke.nvidia.com/purpose: nke-authz-dev
+data:
+  default.conf: |
+    server {
+      listen 8443 ssl;
+      ssl_certificate     /etc/nginx/tls/tls.crt;
+      ssl_certificate_key /etc/nginx/tls/tls.key;
+
+      location = /idp-a/jwks.json {
+        default_type application/json;
+        alias /srv/jwks/jwks.json;
+      }
+      location = /idp-b/jwks.json {
+        default_type application/json;
+        alias /srv/jwks/jwks.json;
+      }
+      location / {
+        return 404;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: test-idp
+  namespace: nvke-authz-idp
+  labels:
+    app.kubernetes.io/name: test-idp
+    nke.nvidia.com/purpose: nke-authz-dev
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: test-idp
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: test-idp
+    spec:
+      containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:1.27.3-alpine
+          ports:
+            - name: https
+              containerPort: 8443
+          readinessProbe:
+            httpGet:
+              scheme: HTTPS
+              path: /idp-a/jwks.json
+              port: https
+            periodSeconds: 2
+          volumeMounts:
+            - name: conf
+              mountPath: /etc/nginx/conf.d
+              readOnly: true
+            - name: tls
+              mountPath: /etc/nginx/tls
+              readOnly: true
+            - name: jwks
+              mountPath: /srv/jwks
+              readOnly: true
+      volumes:
+        - name: conf
+          configMap:
+            name: test-idp-nginx
+        - name: tls
+          secret:
+            secretName: test-idp-tls
+        - name: jwks
+          configMap:
+            name: test-idp-jwks
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: test-idp
+  namespace: nvke-authz-idp
+  labels:
+    nke.nvidia.com/purpose: nke-authz-dev
+spec:
+  selector:
+    app.kubernetes.io/name: test-idp
+  ports:
+    - name: https
+      port: 443
+      targetPort: https

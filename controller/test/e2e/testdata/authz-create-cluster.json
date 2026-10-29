@@ -1,0 +1,24 @@
+{
+  "name": "PLACEHOLDER",
+  "controlPlaneKubernetesVersion": "1.31.0",
+  "etcdEncrypted": false,
+  "cniPlugin": "ovn-kubernetes",
+  "nico": {
+    "orgID": "org",
+    "siteID": "3D5E0845-E147-4A52-9006-75BDEBC34CA1",
+    "vpcID": "9B3DFBF6-3DDA-4712-BF77-B9ED80B5F885"
+  },
+  "controlPlaneConfig": {
+    "desiredCount": 1,
+    "nico": {
+      "instanceTypePreference": [
+        "D214AAAD-E547-491D-B18F-D668D8319B0E"
+      ],
+      "release": "nvke-nico-vms-24.04-arm64-fde",
+      "configProfile": "default",
+      "subnetIDs": [
+        "c94d2b41-1b11-486b-a8f0-bd87cc45b199"
+      ]
+    }
+  }
+}

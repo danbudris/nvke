@@ -20,7 +20,10 @@ import (
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
+	authzlib "github.com/dsx-ai-factory/nvke/auth/authz"
+
 	"github.com/dsx-ai-factory/nvke/controller/api"
+	"github.com/dsx-ai-factory/nvke/controller/internal/authz"
 	"github.com/dsx-ai-factory/nvke/controller/internal/capi"
 	"github.com/dsx-ai-factory/nvke/controller/internal/config"
 	"github.com/dsx-ai-factory/nvke/controller/internal/constants"
@@ -2123,6 +2126,36 @@ func TestValidateCreateClusterRequestFields_LegacyCalicoCreationGate(t *testing.
 			}
 		})
 	}
+}
+
+// With authorization on, a create records the caller's tenant, and a create
+// with no authorized caller fails before any write.
+func TestClusterService_CreateClusterRecordsTheCallersTenant(t *testing.T) {
+	newServer := func(mockDB *mockDB) api.StrictServerInterface {
+		return server.NewServerImpl(config.Config{}, discardLogger(), mockDB, nil, nil,
+			server.WithAllowLegacyCalicoClusterCreation(true),
+			server.WithAuthorizer(authz.NewMiddleware(nil, nil, nil, discardLogger())))
+	}
+
+	t.Run("no caller", func(t *testing.T) {
+		mockDB := &mockDB{MockTx: &mockTx{}}
+		_, err := newServer(mockDB).CreateCluster(context.Background(), api.CreateClusterRequestObject{Body: baseNicoClusterCreateRequest()})
+		require.ErrorIs(t, err, authz.ErrNoCaller)
+		mockDB.AssertNotCalled(t, "RunInTx", mock.Anything, mock.Anything)
+	})
+
+	t.Run("a caller", func(t *testing.T) {
+		mockDB := &mockDB{MockTx: &mockTx{}}
+		mockDB.On("RunInTx", mock.Anything, mock.Anything).Return(nil)
+		mockDB.MockTx.On("CreateCluster", mock.Anything, mock.MatchedBy(func(c *db.Cluster) bool {
+			return c.Tenant == "nca-a"
+		})).Return(db.Cluster{}, errors.New("stop after the insert"))
+
+		ctx := authz.ContextWithCaller(context.Background(), authzlib.Caller{Tenant: "nca-a"})
+		_, err := newServer(mockDB).CreateCluster(ctx, api.CreateClusterRequestObject{Body: baseNicoClusterCreateRequest()})
+		require.ErrorContains(t, err, "stop after the insert")
+		mockDB.MockTx.AssertExpectations(t)
+	})
 }
 
 func TestClusterService_CreateClusterRejectsCalicoBeforeTransaction(t *testing.T) {

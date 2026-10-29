@@ -13,6 +13,7 @@ import (
 	"go.temporal.io/sdk/client"
 
 	"github.com/dsx-ai-factory/nvke/controller/api"
+	"github.com/dsx-ai-factory/nvke/controller/internal/authz"
 	"github.com/dsx-ai-factory/nvke/controller/internal/db"
 )
 
@@ -33,6 +34,7 @@ func NewNodeSetService(logger *slog.Logger, database db.DB, temporalClient clien
 func (s *nodeSetService) ListNodeSets(ctx context.Context, req api.ListNodeSetsRequestObject) (api.ListNodeSetsResponseObject, error) {
 	filters := db.NodeSetFilters{
 		NodePoolID: req.Params.NodePoolID,
+		Tenant:     authz.ListTenant(ctx),
 	}
 
 	dbNodeSets, err := s.db.ListNodeSets(ctx, filters)

@@ -58,10 +58,10 @@ permit(principal, action == NVKE::Action::"listReleases", resource);
 
 // writeBundle writes each file in f to dir, and leaves dir's other files in
 // place.
-func writeBundle(t *testing.T, dir string, f files) {
-	t.Helper()
+func writeBundle(tb testing.TB, dir string, f files) {
+	tb.Helper()
 	for name, content := range f {
-		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600))
+		require.NoError(tb, os.WriteFile(filepath.Join(dir, name), []byte(content), 0o600))
 	}
 }
 

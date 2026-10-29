@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -24,8 +25,10 @@ import (
 	enginev1 "github.com/dsx-ai-factory/nvke/management-engine/apis/v1"
 
 	"github.com/dsx-ai-factory/nvke/auth/authn"
+	authzlib "github.com/dsx-ai-factory/nvke/auth/authz"
 
 	"github.com/dsx-ai-factory/nvke/controller/internal/agent"
+	"github.com/dsx-ai-factory/nvke/controller/internal/authz"
 	"github.com/dsx-ai-factory/nvke/controller/internal/config"
 	"github.com/dsx-ai-factory/nvke/controller/internal/controllerconfig"
 	"github.com/dsx-ai-factory/nvke/controller/internal/controllers/automode"
@@ -138,6 +141,12 @@ func main() {
 	}
 
 	metrics.SetAuthMode(authMode(authenticator, cfg.PermissiveMode))
+
+	authzClient, err := setupAuthorization(ctx, cfg, controllerCfg.APIAuth.AuthConfig(), authMode(authenticator, cfg.PermissiveMode), logger)
+	if err != nil {
+		logger.Error("Failed to set up API authorization", "error", err)
+		os.Exit(1)
+	}
 
 	// Get cloud-workflow-engine workload trust domain and bundle
 	trustDomain, err := getSpiffeTrustDomain(ctx, cfg, logger)
@@ -572,6 +581,7 @@ func main() {
 		server.WithFleetOIDC(&controllerCfg.OIDC),
 		server.WithAllowLegacyCalicoClusterCreation(controllerCfg.AllowLegacyCalicoClusterCreation),
 		server.WithNodeAgentClient(nodeAgentClient),
+		server.WithAuthorizer(newAuthorizer(authzClient, dbInstance, logger)),
 	)
 	if err != nil {
 		logger.Error("Failed to construct HTTP server", "error", err)
@@ -707,6 +717,65 @@ func authMode(authenticator *authn.Authenticator, permissive bool) string {
 	default:
 		return "enforcing"
 	}
+}
+
+// setupAuthorization loads the authorization bundle, starts reloading it until
+// ctx is done, and returns the client that asks it. It returns (nil, nil) when
+// AUTHZ_BUNDLE_DIR is unset, meaning authorization is off.
+//
+// Authorization needs authentication enforcing: off, no request has a
+// principal to authorize, and permissive, authorization would refuse what
+// authentication only logs. apiAuth is apiAuth from nvke-controller-config,
+// nil when it isn't enabled.
+func setupAuthorization(ctx context.Context, cfg config.Config, apiAuth *authn.Config, mode string, logger *slog.Logger) (*authzlib.Client, error) {
+	if cfg.AuthzBundleDir == "" {
+		return nil, nil //nolint:nilnil // a nil client and a nil error is exactly "off"
+	}
+	if mode != "enforcing" {
+		return nil, fmt.Errorf("AUTHZ_BUNDLE_DIR is set, but API authentication is %s; authorization needs it enforcing", mode)
+	}
+	// authn.Setup refuses apiAuth and AUTH_CONFIG_PATH together, so the
+	// config it loaded is whichever is set.
+	if cfg.AuthConfigPath != "" {
+		var err error
+		if apiAuth, err = authn.Load(cfg.AuthConfigPath); err != nil {
+			return nil, fmt.Errorf("loading authentication config %q: %w", cfg.AuthConfigPath, err)
+		}
+	}
+	if apiAuth == nil {
+		return nil, errors.New("no authentication config is loaded")
+	}
+	issuers := make([]string, 0, len(apiAuth.Issuers))
+	for _, issuer := range apiAuth.Issuers {
+		issuers = append(issuers, issuer.Name)
+	}
+
+	lb, err := authz.NewLocalBundle(cfg.AuthzBundleDir, issuers)
+	if err != nil {
+		return nil, err
+	}
+	client, err := authzlib.NewClient(lb)
+	if err != nil {
+		return nil, fmt.Errorf("building the authorization client: %w", err)
+	}
+	go authz.RunReloads(ctx, lb, cfg.AuthzReloadInterval, metrics.RecordAuthzReload, logger.With("logger", "authz"))
+
+	logger.Info("API authorization is enabled",
+		"backend", lb.Name(),
+		"bundle_dir", cfg.AuthzBundleDir,
+		"reload_interval", cfg.AuthzReloadInterval,
+		"issuers", issuers,
+	)
+	return client, nil
+}
+
+// newAuthorizer returns the middleware that asks client, or nil when
+// authorization is off.
+func newAuthorizer(client *authzlib.Client, tenants db.TenantQueries, logger *slog.Logger) *authz.Middleware {
+	if client == nil {
+		return nil
+	}
+	return authz.NewMiddleware(client, tenants, metrics.RecordAuthzRequest, logger.With("logger", "authz"))
 }
 
 // registerTemporalNamespaceWithRetry retries namespace registration for a

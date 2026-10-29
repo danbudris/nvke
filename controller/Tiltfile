@@ -900,6 +900,7 @@ k8s_resource(
         "nke-clients:namespace",
         "nke-outsiders:namespace",
         "nke-client:serviceaccount:nke-clients",
+        "nke-viewer:serviceaccount:nke-clients",
         "nke-outsider:serviceaccount:nke-outsiders",
         "nke-e2e:serviceaccount:nke-clients",
         "nke-client-token-minter:role:nke-clients",
@@ -1067,6 +1068,77 @@ for _name in _required_cred_names:
     _controller_chart_extra_env.append({"name": _name, "value": _required_creds[_name]})
 # API authentication comes from the apiAuth values below, not from this env list.
 
+# NVKE API authorization with the LocalBundle backend, off by default:
+#
+#   NKE_AUTHZ_ENABLED=true tilt up
+#
+# applies the bundle in hack/authz-dev/bundle as ConfigMap nvke-authz-bundle,
+# mounts it at /etc/nvke/authz and sets AUTHZ_BUNDLE_DIR. It also turns on
+# NKE_AUTHZ_IDP_ENABLED, which deploys a test IdP (hack/authz-dev/idp.yaml) and
+# appends its issuers, idp-a and idp-b, to the authN issuers. Set
+# NKE_AUTHZ_IDP_ENABLED=true with NKE_AUTHZ_ENABLED=false to keep the same
+# authN configuration with authZ off, as an overhead comparison needs.
+# hack/authz-dev/gen.sh generates the IdP's keys and certificates into
+# .local/authz-dev, and hack/authz-dev/mint signs tokens for it.
+_controller_authz_enabled = os.getenv(
+    "NKE_AUTHZ_ENABLED", _tilt_env.get("NKE_AUTHZ_ENABLED", "false")) == "true"
+_controller_authz_idp_enabled = os.getenv(
+    "NKE_AUTHZ_IDP_ENABLED",
+    _tilt_env.get("NKE_AUTHZ_IDP_ENABLED", "true" if _controller_authz_enabled else "false")) == "true"
+_controller_authz_flags = []
+_controller_authz_resource_deps = []
+if (_controller_authz_enabled or _controller_authz_idp_enabled) and not _controller_auth_enabled:
+    fail("NKE_AUTHZ_ENABLED and NKE_AUTHZ_IDP_ENABLED need NKE_AUTH_ENABLED=true: the controller refuses authorization without authentication")
+if _controller_authz_idp_enabled:
+    _authz_dev_dir = str(local(["bash", "hack/authz-dev/gen.sh"], quiet=True)).strip()
+    _authz_idp_ca = str(read_file(os.path.join(_authz_dev_dir, "ca.crt")))
+    _authz_idp_groups = {
+        "idp-a": ["nvke-readers", "nvke-writers", "nvke-nobody"],
+        "idp-b": ["nvke-readers", "nvke-writers"],
+    }
+    _authz_issuers = read_yaml("hack/tilt-controller-api-auth-values.yaml")["apiAuth"]["config"]["issuers"]
+    for _name in ["idp-a", "idp-b"]:
+        _authz_issuers.append({
+            "name": _name,
+            "issuer": "https://test-idp.nvke-authz-idp.svc/%s" % _name,
+            "jwks": {
+                "uri": "https://test-idp.nvke-authz-idp.svc/%s/jwks.json" % _name,
+                "caBundle": _authz_idp_ca,
+            },
+            "algorithms": ["ES256"],
+            "admit": {"groups": _authz_idp_groups[_name]},
+        })
+    _controller_authz_flags += ["--set-json", "apiAuth.config.issuers=%s" % encode_json(_authz_issuers)]
+    local_resource(
+        "nvke-authz-idp",
+        labels=["1-infra"],
+        cmd=["bash", "hack/authz-dev/apply-idp.sh"],
+        deps=["hack/authz-dev/idp.yaml", "hack/authz-dev/apply-idp.sh", "hack/authz-dev/gen.sh"],
+        resource_deps=["check-management-cluster"],
+    )
+    _controller_authz_resource_deps.append("nvke-authz-idp")
+if _controller_authz_enabled:
+    _controller_chart_extra_env.append({"name": "AUTHZ_BUNDLE_DIR", "value": "/etc/nvke/authz"})
+    if "AUTHZ_RELOAD_INTERVAL" in _tilt_env:
+        _controller_chart_extra_env.append({"name": "AUTHZ_RELOAD_INTERVAL", "value": _tilt_env["AUTHZ_RELOAD_INTERVAL"]})
+    _controller_authz_flags += [
+        "--set-json", "volumes=%s" % encode_json([
+            {"name": "nvke-authz-bundle", "configMap": {"name": "nvke-authz-bundle"}},
+        ]),
+        "--set-json", "volumeMounts=%s" % encode_json([
+            {"name": "nvke-authz-bundle", "mountPath": "/etc/nvke/authz", "readOnly": True},
+        ]),
+    ]
+    local_resource(
+        "nvke-authz-bundle",
+        labels=["1-infra"],
+        cmd=["bash", "hack/authz-dev/apply-bundle.sh"],
+        env={"NVKE_CONTROLLER_NAMESPACE": CONTROLLER_NAMESPACE},
+        deps=["hack/authz-dev/bundle", "hack/authz-dev/apply-bundle.sh"],
+        resource_deps=["nvke-auth-dev"],
+    )
+    _controller_authz_resource_deps.append("nvke-authz-bundle")
+
 # Local node images include the CNI manifests package, so install CNI after
 # kubeadm init without a bundle server. E2E lanes can still select the legacy
 # in-init path explicitly through the process environment or .env.tilt.
@@ -1111,7 +1183,7 @@ _controller_chart_flags = [
     "--set-json", "env=%s" % encode_json(_controller_chart_extra_env),
     "--wait",
     "--timeout", "10m",
-] + _all_controller_chart_flags
+] + _controller_authz_flags + _all_controller_chart_flags
 
 if _controller_spire_attestation_method != "":
     _controller_chart_flags += [
@@ -1133,7 +1205,7 @@ if CONTROLLER_IMAGE:
 
 _controller_local_debug_active = os.path.exists(CONTROLLER_LOCAL_DEBUG_MARKER)
 _controller_tilt_goarch = local_arch()
-_controller_resource_deps = ["postgres", "temporal", "spire-nvke-services-spiffe-id", "spire-tpm-pubhashes", "nvke-system-namespace", "nvke-auth-dev", "machine-engine-releases"] + _all_controller_resource_deps
+_controller_resource_deps = ["postgres", "temporal", "spire-nvke-services-spiffe-id", "spire-tpm-pubhashes", "nvke-system-namespace", "nvke-auth-dev", "machine-engine-releases"] + _controller_authz_resource_deps + _all_controller_resource_deps
 if _controller_oidc_enabled:
     _controller_resource_deps += ["spire-oidc-provider-nodeport", "oidc-upstream-ca-ready"]
 

@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# The authorization dev environment's tenants and role mappings. The issuer
+# names are the authN issuers in hack/tilt-controller-api-auth-values.yaml and
+# the two the Tiltfile adds when NKE_AUTHZ_ENABLED is true.
+apiVersion: auth.nvke.nvidia.com/v1alpha1
+kind: AuthorizationConfiguration
+operatorTenant: nca-op
+issuers:
+  local-kubernetes:
+    tenant: {fixed: nca-op}
+    operators: true
+    serviceAccounts:
+      - {namespace: nke-clients, name: nke-client, grants: [operator]}
+      - {namespace: nke-clients, name: nke-viewer, grants: [reader]}
+  idp-a:
+    tenant: {claim: org}
+    claims:
+      - {name: groups, value: nvke-readers, grants: [reader]}
+      - {name: groups, value: nvke-writers, grants: [writer]}
+  idp-b:
+    tenant: {fixed: nca-b}
+    claims:
+      - {name: groups, value: nvke-readers, grants: [reader]}

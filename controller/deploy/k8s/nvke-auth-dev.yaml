@@ -8,6 +8,8 @@
 # Two client identities, so the negative cases can be exercised by hand:
 #
 #   nke-clients/nke-client     admitted   -> 200
+#   nke-clients/nke-viewer     admitted   -> 200; the authorization dev
+#                              bundle (hack/authz-dev) makes it a reader
 #   nke-outsiders/nke-outsider unadmitted -> 403
 #
 #   kubectl create token nke-client -n nke-clients \
@@ -42,6 +44,17 @@ apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: nke-client
+  namespace: nke-clients
+  labels:
+    app.kubernetes.io/name: cloud-workflow-engine
+    app.kubernetes.io/component: api-auth-dev
+    app.kubernetes.io/part-of: cloud-workflow-engine
+    nke.nvidia.com/purpose: nke-auth-dev
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nke-viewer
   namespace: nke-clients
   labels:
     app.kubernetes.io/name: cloud-workflow-engine
@@ -99,7 +112,7 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: ["serviceaccounts/token"]
-    resourceNames: ["nke-client"]
+    resourceNames: ["nke-client", "nke-viewer"]
     verbs: ["create"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
