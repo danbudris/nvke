@@ -63,7 +63,7 @@ func (c *Client) Authorize(ctx context.Context, q Query) (Decision, error) {
 		d.Outcome = OutcomeDeny
 		return d, fmt.Errorf("%w: %s: %w", ErrDenied, c.backend.Name(), hideSentinels(err))
 	}
-	switch d.Outcome {
+	switch d.Outcome { //nolint:exhaustive // OutcomeError fails closed in default
 	case OutcomeAllow:
 		// The API records Caller.Tenant as a create's owner, filters a list
 		// by it and logs it. An allow must carry a valid one, or none for a
@@ -80,6 +80,7 @@ func (c *Client) Authorize(ctx context.Context, q Query) (Decision, error) {
 	case OutcomeNoTenant:
 		return d, ErrNoTenant
 	default:
+		// An unknown outcome, or OutcomeError, which only a Guard counts.
 		unknown := d.Outcome
 		d.Outcome = OutcomeDeny
 		return d, fmt.Errorf("%w: %s returned an unknown outcome %q", ErrDenied, c.backend.Name(), unknown)

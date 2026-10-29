@@ -70,7 +70,8 @@ func (b *fakeBackend) Authorize(_ context.Context, q authz.Query) (authz.Decisio
 			return authz.Decision{}, errors.New(string(refusal))
 		}
 		d.Outcome = refusal
-	} else if q.Action == deniedAction {
+	} else if q.Action == deniedAction ||
+		b.broken == "operator policy reads the object's tenant" && caller.Operator && q.Resource.Tenant == "acme" {
 		d.Outcome = authz.OutcomeDeny
 	}
 	if key != "" && (d.Outcome == authz.OutcomeAllow || b.broken != "cache of allowed creates keyed by collection") {
@@ -170,6 +171,7 @@ func TestSuiteCatchesBrokenBackends(t *testing.T) {
 		"operator needs no tenant",
 		"operator reports the resource's tenant",
 		"operator reports the created object's tenant",
+		"operator policy reads the object's tenant",
 		"cache keyed without the caller's tenant",
 		"cache of allowed creates keyed by collection",
 	} {
