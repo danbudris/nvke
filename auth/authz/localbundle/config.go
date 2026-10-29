@@ -51,6 +51,14 @@ type issuerConfig struct {
 	// every mapping it matches.
 	Claims          []claimMapping          `json:"claims"`
 	ServiceAccounts []serviceAccountMapping `json:"serviceAccounts"`
+
+	// RoleClaim names a top-level claim whose value names roles the caller
+	// holds: a string names one role, and a string array names each string
+	// in it. Such a role applies in the caller's own tenant and on global
+	// resources. It never makes the caller an operator. Name a claim only the
+	// issuer's administrators set, never one a user can set, such as email or
+	// preferred_username.
+	RoleClaim string `json:"roleClaim,omitempty"`
 }
 
 // tenantSource says where a caller's tenant comes from. Exactly one of Claim
@@ -99,6 +107,7 @@ type compiledIssuer struct {
 	operators       bool
 	claims          []claimMatch
 	serviceAccounts []serviceAccountMatch
+	roleClaim       string
 }
 
 // claimMatch grants its roles to a caller whose claim name equals value, or is
@@ -153,7 +162,7 @@ func loadConfig(raw []byte, issuers []string, declared types.EntityMap) (compile
 func (c authorizationConfig) compile() compiledConfig {
 	compiled := compiledConfig{operatorTenant: c.OperatorTenant, issuers: make(map[string]compiledIssuer, len(c.Issuers))}
 	for name, i := range c.Issuers {
-		issuer := compiledIssuer{tenant: i.Tenant, operators: i.Operators}
+		issuer := compiledIssuer{tenant: i.Tenant, operators: i.Operators, roleClaim: i.RoleClaim}
 		for _, m := range i.Claims {
 			issuer.claims = append(issuer.claims, claimMatch{name: m.Name, value: m.Value, grants: roleUIDs(m.Grants)})
 		}
@@ -195,8 +204,9 @@ func (c authorizationConfig) checkTypeMeta() []error {
 }
 
 // checkIssuer checks one issuer's settings: the issuer is in the authN config,
-// its tenant source is valid, its operator setting can take effect, and each
-// claim and service account mapping is valid. Each error names its path.
+// its tenant source is valid, its operator setting can take effect, and its
+// role claim and each claim and service account mapping are valid. Each error
+// names its path.
 func (c authorizationConfig) checkIssuer(name string, issuers []string, declared types.EntityMap) []error {
 	i := c.Issuers[name]
 	path := "issuers." + name
@@ -208,6 +218,14 @@ func (c authorizationConfig) checkIssuer(name string, issuers []string, declared
 		errs = append(errs, fmt.Errorf("%s.tenant: %w", path, err))
 	} else if err := checkOperators(i, c.OperatorTenant); err != nil {
 		errs = append(errs, fmt.Errorf("%s: %w", path, err))
+	}
+	if i.RoleClaim != "" {
+		if err := checkClaimName(i.RoleClaim); err != nil {
+			errs = append(errs, fmt.Errorf("%s: roleClaim %w", path, err))
+		} else if i.RoleClaim == i.Tenant.Claim {
+			errs = append(errs, fmt.Errorf("%s: roleClaim is tenant.claim %q, so a tenant whose ID is a role name "+
+				"would hold that role", path, i.RoleClaim))
+		}
 	}
 	for j, m := range i.Claims {
 		mapping := fmt.Sprintf("%s.claims[%d]", path, j)
@@ -368,8 +386,9 @@ func (c compiledConfig) callerOf(p authn.Principal) (authz.Caller, authz.Outcome
 }
 
 // rolesFor returns the roles that every matching claim and service account
-// mapping of p's issuer grants. Claims decide which roles p holds, and never
-// reach Cedar.
+// mapping of p's issuer grants, and those its role claim names. A role may
+// appear more than once: decide puts the roles in a set. Claims decide which
+// roles p holds, and never reach Cedar.
 func (c compiledConfig) rolesFor(p authn.Principal) []types.EntityUID {
 	var roles []types.EntityUID
 	i := c.issuers[p.IssuerName]
@@ -386,7 +405,33 @@ func (c compiledConfig) rolesFor(p authn.Principal) []types.EntityUID {
 			roles = append(roles, m.grants...)
 		}
 	}
+	if i.roleClaim != "" {
+		roles = append(roles, claimedRoles(p.Claims[i.roleClaim])...)
+	}
 	return roles
+}
+
+// claimedRoles returns the roles a role claim's value names: a string names
+// one role, and an array names each string in it. Like authN's groups rule,
+// an array keeps its strings beside other elements, because each element
+// names its own role. Names match exactly, and any other value names none. A
+// name rolesFile doesn't declare grants nothing, because checkNames refuses a
+// policy that names it.
+func claimedRoles(value any) []types.EntityUID {
+	switch v := value.(type) {
+	case string:
+		return []types.EntityUID{roleUID(v)}
+	case []any:
+		var roles []types.EntityUID
+		for _, elem := range v {
+			if name, ok := elem.(string); ok {
+				roles = append(roles, roleUID(name))
+			}
+		}
+		return roles
+	default:
+		return nil
+	}
 }
 
 // claimMatches reports whether the claim name equals value, or is a string

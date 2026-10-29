@@ -11,6 +11,7 @@
 //	issuers:
 //	  keycloak:
 //	    tenant: {claim: organization}
+//	    roleClaim: nvke_roles
 //	    claims:
 //	      - {name: groups, value: readers, grants: [reader]}
 //	  cluster-sa:
@@ -24,6 +25,14 @@
 // an issuer authorization.yaml doesn't list has no tenant and no roles. A
 // caller in the operator tenant is an operator if its issuer sets operators,
 // and is refused as an impostor otherwise.
+//
+// An issuer's roleClaim names a token claim whose value names roles. The
+// caller holds each role it names. A name roles.json doesn't declare grants
+// nothing. A role from roleClaim applies in the caller's own tenant and on
+// global resources. It never makes the caller an operator: only
+// operatorTenant and operators do. roleClaim must name a claim only the
+// issuer's administrators set. It must never name one a user can set, such as
+// email or preferred_username.
 package localbundle
 
 import (
