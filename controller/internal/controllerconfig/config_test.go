@@ -1334,6 +1334,25 @@ func TestValidateAPIAuth(t *testing.T) {
 	}
 }
 
+// A null service account name decodes like an absent one, which admits the
+// whole namespace, so apiAuth refuses each spelling of null as authn.Load does.
+func TestAPIAuthRefusesNullServiceAccountName(t *testing.T) {
+	t.Parallel()
+
+	const wantErr = `apiAuth: issuers[0] (local-kubernetes): admit: serviceAccounts[0]: name is null; ` +
+		`remove the key to match any service account in namespace "nke-clients", or set a name`
+	for _, nameLine := range []string{"name:", "name: ~", "name: null", `"name": null`} {
+		t.Run(nameLine, func(t *testing.T) {
+			t.Parallel()
+
+			apiAuth := "apiAuth:\n  enabled: true\n  audiences: [\"https://nke.example.internal\"]\n  issuers:" +
+				apiAuthIssuer + "            " + nameLine + "\n"
+			_, err := controllerconfig.Load(writeConfig(t, minimalConfigWithoutAPIAuth+apiAuth))
+			require.ErrorContains(t, err, wantErr)
+		})
+	}
+}
+
 // permissive lives under apiAuth. It applies to whichever source configures
 // authentication, so it loads while the section is off, and the old top-level
 // key is refused with a pointer to the new one.
