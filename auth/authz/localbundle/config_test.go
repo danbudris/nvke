@@ -146,6 +146,16 @@ func TestNewRefusesABadConfig(t *testing.T) {
 			wantErr: `authorization.yaml: issuers.keycloak.claims[1]: grants[0] "raeder" isn't a role roles.json declares`,
 		},
 		{
+			name:    "an aud role claim",
+			config:  keycloak(`{tenant: {claim: org}, roleClaim: aud}`),
+			wantErr: `issuers.keycloak: roleClaim can't be "aud", because the caller chooses its value`,
+		},
+		{
+			name:    "a role claim that is the tenant claim",
+			config:  keycloak(`{tenant: {claim: org}, roleClaim: org}`),
+			wantErr: `issuers.keycloak: roleClaim is tenant.claim "org", so a tenant whose ID is a role name would hold that role`,
+		},
+		{
 			name:    "a grant in the entity reference form",
 			config:  keycloak(`{tenant: {claim: org}, claims: [{name: groups, value: b, grants: [{type: "NVKE::Role", id: reader}]}]}`),
 			wantErr: "parse authorization.yaml",
@@ -361,6 +371,199 @@ when { principal in NVKE::Role::"reader" };`
 			if tt.wantReason != "" {
 				assert.Equal(t, []string{tt.wantReason}, d.Reasons)
 			}
+		})
+	}
+}
+
+// A role claim grants each declared role its value names exactly, only to a
+// caller from its own issuer, beside the roles of every matching mapping.
+func TestAuthorizeGrantsRolesFromARoleClaim(t *testing.T) {
+	t.Parallel()
+
+	f := validBundle()
+	f["policies.cedar"] += `@id("auditors-and-readers-may-delete")
+permit(principal in NVKE::Role::"auditor", action == NVKE::Action::"deleteCluster", resource)
+when { principal in NVKE::Role::"reader" };`
+	f["roles.json"] = `[` + reader + `, {"uid": {"type": "NVKE::Role", "id": "auditor"}, "parents": []}]`
+	f["authorization.yaml"] = configHeader + `issuers:
+  keycloak:
+    tenant: {claim: organization}
+    roleClaim: nvke_roles
+    claims:
+      - {name: groups, value: readers, grants: [reader]}
+  entra:
+    tenant: {claim: tid}
+    roleClaim: roles
+`
+	lb, err := newLocalBundle(t, f)
+	require.NoError(t, err)
+
+	keycloak := func(claims map[string]any) authn.Principal {
+		return authn.Principal{IssuerName: "keycloak", Subject: "alice", Claims: claims}
+	}
+	roles := func(value any) authn.Principal { return keycloak(map[string]any{"nvke_roles": value}) }
+	tests := []struct {
+		name       string
+		principal  authn.Principal
+		action     string
+		want       authz.Outcome
+		wantReason string
+	}{
+		{name: "a string", principal: roles("reader"), want: authz.OutcomeAllow},
+		{name: "an array", principal: roles([]any{"devs", "reader"}), want: authz.OutcomeAllow},
+		{name: "an array holding non-strings", principal: roles([]any{1.0, map[string]any{}, true, "reader"}), want: authz.OutcomeAllow},
+		{name: "an undeclared name", principal: roles([]any{"raeder", "readers"}), want: authz.OutcomeDeny},
+		{name: "a name in the wrong case", principal: roles("Reader"), want: authz.OutcomeDeny},
+		{name: "names joined by a space", principal: roles("reader auditor"), want: authz.OutcomeDeny},
+		{name: "no claim", principal: keycloak(nil), want: authz.OutcomeDeny},
+		{name: "a number", principal: roles(1.0), want: authz.OutcomeDeny},
+		{name: "an object", principal: roles(map[string]any{"reader": true}), want: authz.OutcomeDeny},
+		{name: "a bool", principal: roles(true), want: authz.OutcomeDeny},
+		{
+			name:       "a role claim and a claim mapping",
+			principal:  keycloak(map[string]any{"nvke_roles": "auditor", "groups": "readers"}),
+			action:     "deleteCluster",
+			want:       authz.OutcomeAllow,
+			wantReason: "auditors-and-readers-may-delete",
+		},
+		{name: "a role claim granting one of two needed roles", principal: roles("auditor"), action: "deleteCluster", want: authz.OutcomeDeny},
+		{name: "a keycloak caller with entra's role claim", principal: keycloak(map[string]any{"roles": "reader"}), want: authz.OutcomeDeny},
+		{
+			name:      "an entra caller with keycloak's role claim",
+			principal: authn.Principal{IssuerName: "entra", Subject: "alice", Claims: map[string]any{"nvke_roles": "reader"}},
+			want:      authz.OutcomeDeny,
+		},
+		{
+			name:      "an entra caller with its own role claim",
+			principal: authn.Principal{IssuerName: "entra", Subject: "alice", Claims: map[string]any{"roles": "reader"}},
+			want:      authz.OutcomeAllow,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			action := tt.action
+			if action == "" {
+				action = "getCluster"
+			}
+			d, err := lb.Authorize(t.Context(), authz.Query{
+				Principal: tt.principal,
+				Action:    action,
+				Resource:  authz.Resource{Type: "Cluster", ID: "c1", Scope: authz.ScopeGlobal},
+			})
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, d.Outcome)
+			if tt.wantReason != "" {
+				assert.Equal(t, []string{tt.wantReason}, d.Reasons)
+			}
+		})
+	}
+}
+
+// A null roleClaim, which YAML writes as `roleClaim:`, means no role claim.
+// The caller's claim with the empty name grants nothing.
+func TestNewTakesANullRoleClaimAsNone(t *testing.T) {
+	t.Parallel()
+
+	f := validBundle()
+	f["authorization.yaml"] = configHeader + `issuers: {keycloak: {tenant: {claim: organization}, roleClaim: }}`
+	lb, err := newLocalBundle(t, f)
+	require.NoError(t, err)
+
+	d, err := lb.Authorize(t.Context(), authz.Query{
+		Principal: authn.Principal{IssuerName: "keycloak", Subject: "alice", Claims: map[string]any{"": "reader"}},
+		Action:    "getCluster",
+		Resource:  authz.Resource{Type: "Cluster", ID: "c1", Scope: authz.ScopeGlobal},
+	})
+	require.NoError(t, err)
+	assert.Equal(t, authz.OutcomeDeny, d.Outcome)
+}
+
+// A role claim naming the role operators hold grants that role in the caller's
+// own tenant and on global resources. Only operatorTenant and operators make a
+// caller an operator, so the isolation check still hides other tenants'
+// objects.
+func TestARoleClaimDoesNotMakeAnOperator(t *testing.T) {
+	t.Parallel()
+
+	f := files{
+		"policies.cedar": `
+@id("operators-may-delete")
+permit(principal in NVKE::Role::"operator", action == NVKE::Action::"deleteCluster", resource);
+`,
+		"roles.json": `[{"uid": {"type": "NVKE::Role", "id": "operator"}, "parents": []}]`,
+		"authorization.yaml": configHeader + `operatorTenant: ` + operatorTenant + `
+issuers:
+  keycloak:
+    tenant: {claim: organization}
+    roleClaim: nvke_roles
+  cluster-sa:
+    tenant: {fixed: ` + operatorTenant + `}
+    operators: true
+    serviceAccounts:
+      - {namespace: nvke-ops, grants: [operator]}
+`,
+	}
+	lb, err := newLocalBundle(t, f)
+	require.NoError(t, err)
+
+	claimsOperator := func(tenant string) authn.Principal {
+		return authn.Principal{IssuerName: "keycloak", Subject: "alice", Claims: map[string]any{
+			"organization": tenant, "nvke_roles": "operator",
+		}}
+	}
+	operator := authn.Principal{IssuerName: "cluster-sa", Subject: "system:serviceaccount:nvke-ops:fleet", Claims: map[string]any{
+		"kubernetes.io": map[string]any{"namespace": "nvke-ops", "serviceaccount": map[string]any{"name": "fleet"}},
+	}}
+	inTenant := func(tenant string) authz.Resource {
+		return authz.Resource{Type: "Cluster", ID: "c1", Scope: authz.ScopeObject, Tenant: tenant}
+	}
+	tests := []struct {
+		name       string
+		principal  authn.Principal
+		resource   authz.Resource
+		want       authz.Outcome
+		wantCaller authz.Caller
+	}{
+		{
+			name:       "an object in the caller's tenant",
+			principal:  claimsOperator("tenant-a"),
+			resource:   inTenant("tenant-a"),
+			want:       authz.OutcomeAllow,
+			wantCaller: authz.Caller{Tenant: "tenant-a"},
+		},
+		{
+			name:       "an object in another tenant",
+			principal:  claimsOperator("tenant-a"),
+			resource:   inTenant("tenant-b"),
+			want:       authz.OutcomeNotFound,
+			wantCaller: authz.Caller{Tenant: "tenant-a"},
+		},
+		{
+			name:       "a global resource",
+			principal:  claimsOperator("tenant-a"),
+			resource:   authz.Resource{Type: "Cluster", ID: "c1", Scope: authz.ScopeGlobal},
+			want:       authz.OutcomeAllow,
+			wantCaller: authz.Caller{Tenant: "tenant-a"},
+		},
+		{
+			name:       "an operator, on another tenant's object",
+			principal:  operator,
+			resource:   inTenant("tenant-b"),
+			want:       authz.OutcomeAllow,
+			wantCaller: authz.Caller{Tenant: operatorTenant, Operator: true},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			d, err := lb.Authorize(t.Context(), authz.Query{Principal: tt.principal, Action: "deleteCluster", Resource: tt.resource})
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, d.Outcome)
+			assert.Equal(t, tt.wantCaller, d.Caller)
 		})
 	}
 }
